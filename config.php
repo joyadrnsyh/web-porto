@@ -1,88 +1,143 @@
 <?php
+// Load Composer autoloader
+if (file_exists(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+}
+
 session_start();
 
-define('DB_HOST', getenv('DB_HOST') ?: 'localhost');
+// Environment Variables or Defaults
+define('MONGODB_URI', getenv('MONGODB_URI') ?: 'mongodb://localhost:27017');
 define('DB_NAME', getenv('DB_NAME') ?: 'web_porto');
-define('DB_USER', getenv('DB_USER') ?: 'root');
-define('DB_PASS', getenv('DB_PASS') ?: '');
-
 define('UPLOAD_DIR', __DIR__ . '/assets/uploads/');
 
 // Dynamic BASE_URL detection
 $protocol = isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http";
-$host = $_SERVER['HTTP_HOST'];
-// Detect if running in subdirectory
-$scriptDir = dirname($_SERVER['SCRIPT_NAME']);
-// Normalize slashes for Windows compatibility
+$host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$scriptDir = dirname($_SERVER['SCRIPT_NAME'] ?? '/');
 $scriptDir = str_replace('\\', '/', $scriptDir);
-
 $baseUrl = $protocol . "://" . $host . ($scriptDir === '/' ? '' : $scriptDir);
-// Remove /admin or /views if matched (since we include files)
 $baseUrl = str_replace(['/views/admin', '/views', '/admin'], '', $baseUrl);
 define('BASE_URL', rtrim($baseUrl, '/'));
 
+use MongoDB\Client;
+use MongoDB\BSON\ObjectId;
+
 function getDB() {
-    static $pdo = null;
-    if ($pdo === null) {
+    static $db = null;
+    if ($db === null) {
+        if (!class_exists('MongoDB\Client')) {
+            die("Error: MongoDB library or extension not found. Please run 'composer install' and enable 'extension=mongodb' in your php.ini.");
+        }
         try {
-            $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME . ";charset=utf8mb4", DB_USER, DB_PASS);
-            $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-            $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        } catch (PDOException $e) {
+            $client = new Client(MONGODB_URI);
+            $db = $client->selectDatabase(DB_NAME);
+        } catch (Exception $e) {
             die("Database Connection Error: " . $e->getMessage());
         }
     }
-    return $pdo;
+    return $db;
+}
+
+// Helper to convert BSONDocument to array if needed (though ArrayAccess works mostly)
+function toArray($cursor) {
+    if (is_array($cursor)) return $cursor;
+    // Use typeMap for automatic conversion
+    $typeMap = ['root' => 'array', 'document' => 'array', 'array' => 'array'];
+    return iterator_to_array($cursor); // If cursor set typeMap or we manual map
 }
 
 function getProjects($limit = null) {
-    $pdo = getDB();
-    $sql = "SELECT * FROM projects ORDER BY id DESC";
+    $db = getDB();
+    $options = [
+        'sort' => ['created_at' => -1],
+        'typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']
+    ];
     if ($limit) {
-        $sql .= " LIMIT :limit";
+        $options['limit'] = (int)$limit;
     }
-    $stmt = $pdo->prepare($sql);
-    if ($limit) {
-        $stmt->bindValue(':limit', (int)$limit, PDO::PARAM_INT);
-    }
-    $stmt->execute();
-    $projects = $stmt->fetchAll();
     
-    // Convert tags string back to array for compatibility
+    $cursor = $db->projects->find([], $options);
+    $projects = iterator_to_array($cursor);
+
+    // Tags normalization
     foreach ($projects as &$project) {
-        $project['tags'] = $project['tags'] ? explode(',', $project['tags']) : [];
-        $project['tags'] = array_map('trim', $project['tags']);
+        if (isset($project['tags']) && is_string($project['tags'])) {
+            $project['tags'] = array_map('trim', explode(',', $project['tags']));
+        } elseif (!isset($project['tags']) || !is_array($project['tags'])) {
+            $project['tags'] = [];
+        }
+        // Normalize ID for views using 'id'
+        if (isset($project['_id'])) {
+            $project['id'] = (string)$project['_id'];
+        }
     }
     return $projects;
 }
 
 function getProjectBySlug($slug) {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("SELECT * FROM projects WHERE slug = ?");
-    $stmt->execute([$slug]);
-    $project = $stmt->fetch();
+    $db = getDB();
+    $project = $db->projects->findOne(
+        ['slug' => $slug],
+        ['typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']]
+    );
     
     if ($project) {
-        $project['tags'] = $project['tags'] ? explode(',', $project['tags']) : [];
-        $project['tags'] = array_map('trim', $project['tags']);
+        if (isset($project['tags']) && is_string($project['tags'])) {
+            $project['tags'] = array_map('trim', explode(',', $project['tags']));
+        } elseif (!isset($project['tags']) || !is_array($project['tags'])) {
+            $project['tags'] = [];
+        }
+        if (isset($project['_id'])) {
+            $project['id'] = (string)$project['_id'];
+        }
     }
     return $project;
 }
 
 function getProjectById($id) {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("SELECT * FROM projects WHERE id = ?");
-    $stmt->execute([$id]);
-    $project = $stmt->fetch();
+    $db = getDB();
+    try {
+        // Try ObjectId first
+        $query = ['_id' => new ObjectId($id)];
+    } catch (Exception $e) {
+        // Fallback or numeric ID check if imported from SQL without _id conversion?
+        // Usually import keeps numeric IDs as 'id' field, but Mongo generates _id.
+        // Let's search by _id OR id.
+        $query = ['$or' => [
+            ['_id' => new ObjectId($id)],
+            ['id' => (int)$id],
+            ['id' => $id]
+        ]];
+        // Note: ObjectId constructor throws if invalid.
+        // If we catch, use alternative query.
+         $query = ['id' => is_numeric($id) ? (int)$id : $id];
+    }
+    
+    // Better logic: if valid ObjectId string, use _id, else use id field
+    if (preg_match('/^[a-f\d]{24}$/i', $id)) {
+        $query = ['_id' => new ObjectId($id)];
+    } else {
+        $query = ['id' => is_numeric($id) ? (int)$id : $id];
+    }
+
+    $project = $db->projects->findOne(
+        $query,
+        ['typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']]
+    );
     
     if ($project) {
-        $project['tags'] = $project['tags'] ? explode(',', $project['tags']) : [];
-        $project['tags'] = array_map('trim', $project['tags']);
+        if (isset($project['tags']) && is_string($project['tags'])) {
+            $project['tags'] = array_map('trim', explode(',', $project['tags']));
+        } elseif (!isset($project['tags']) || !is_array($project['tags'])) {
+            $project['tags'] = [];
+        }
+        $project['id'] = (string)$project['_id'];
     }
     return $project;
 }
 
-// Flash Message Helpers
+// Flash Message Helpers (Same as before)
 function setFlash($type, $message) {
     $_SESSION['flash'] = ['type' => $type, 'message' => $message];
 }
@@ -97,112 +152,135 @@ function getFlash() {
 }
 
 function saveProject($title, $description, $image, $tags, $id = null, $link = '') {
-    $pdo = getDB();
-    // Tags is already a comma separated string from editor.php, or if array handle it (though editor sends string/array)
-    // Editor.php sends: $tags = implode(',', $tags); if array.
-    
+    $db = getDB();
     $slug = slugify($title);
     
-    try {
-        if ($id) {
-            // Update
-            $stmt = $pdo->prepare("UPDATE projects SET title=?, slug=?, description=?, image=?, tags=?, link=? WHERE id=?");
-            $stmt->execute([$title, $slug, $description, $image, $tags, $link, $id]);
-            return $id;
-        } else {
-            // Insert
-            $stmt = $pdo->prepare("INSERT INTO projects (title, slug, description, image, tags, link) VALUES (?, ?, ?, ?, ?, ?)");
-            $stmt->execute([$title, $slug, $description, $image, $tags, $link]);
-            return $pdo->lastInsertId();
-        }
-    } catch (Exception $e) {
-        throw $e;
+    // Ensure tags is array for storage? Or keep string to match SQL legacy?
+    // Let's store as array in Mongo for cleaner data, but views handle array/string.
+    // The instructions implied "comma separated string" in inputs.
+    // Let's keep it as is, or convert. Storing as string is "safe" for existing views logic I added.
+    
+    $data = [
+        'title' => $title,
+        'slug' => $slug,
+        'description' => $description,
+        'image' => $image,
+        'tags' => $tags, // String from input
+        'link' => $link,
+        'updated_at' => new MongoDB\BSON\UTCDateTime()
+    ];
+
+    if ($id) {
+        // Update
+        // Check if ID is ObjectId string
+        $filter = preg_match('/^[a-f\d]{24}$/i', $id) ? ['_id' => new ObjectId($id)] : ['id' => (int)$id];
+        $db->projects->updateOne($filter, ['$set' => $data]);
+        return $id;
+    } else {
+        // Insert
+        $data['created_at'] = new MongoDB\BSON\UTCDateTime();
+        // We rely on auto _id
+        $result = $db->projects->insertOne($data);
+        return (string)$result->getInsertedId();
     }
 }
 
 function getProjectGallery($projectId) {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("SELECT * FROM project_gallery WHERE project_id = ?");
-    $stmt->execute([$projectId]);
-    return $stmt->fetchAll();
+    $db = getDB();
+    // Project ID in gallery: likely stored as string or whatever.
+    // If we use string IDs from Mongo, this links via that string.
+    $cursor = $db->project_gallery->find(
+        ['project_id' => $projectId],
+        ['typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']]
+    );
+    return iterator_to_array($cursor);
 }
 
 function addGalleryImage($projectId, $path) {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("INSERT INTO project_gallery (project_id, image_path) VALUES (?, ?)");
-    $stmt->execute([$projectId, $path]);
+    $db = getDB();
+    $db->project_gallery->insertOne([
+        'project_id' => $projectId,
+        'image_path' => $path,
+        'created_at' => new MongoDB\BSON\UTCDateTime()
+    ]);
 }
 
 function deleteGalleryImage($id) {
-    $pdo = getDB();
-    // Get path to delete file
-    $stmt = $pdo->prepare("SELECT image_path FROM project_gallery WHERE id = ?");
-    $stmt->execute([$id]);
-    $img = $stmt->fetch();
+    $db = getDB();
+    $filter = preg_match('/^[a-f\d]{24}$/i', $id) ? ['_id' => new ObjectId($id)] : ['id' => (int)$id];
+    
+    $img = $db->project_gallery->findOne($filter);
     
     if($img) {
         $localPath = str_replace(BASE_URL . '/assets/uploads/', UPLOAD_DIR, $img['image_path']);
-        // Fix slash direction for local file system
-        $localPath = str_replace('/', DIRECTORY_SEPARATOR, $localPath);
+        $localPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $localPath);
         
         if(file_exists($localPath)) unlink($localPath);
         
-        $pdo->prepare("DELETE FROM project_gallery WHERE id = ?")->execute([$id]);
+        $db->project_gallery->deleteOne($filter);
     }
 }
 
 // Settings Helpers
 function getSettings() {
-    $pdo = getDB();
-    $stmt = $pdo->query("SELECT * FROM site_settings");
-    $results = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
-    return $results;
+    $db = getDB();
+    $cursor = $db->site_settings->find([], ['typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']]);
+    $settings = [];
+    foreach ($cursor as $doc) {
+        $settings[$doc['setting_key']] = $doc['setting_value'];
+    }
+    return $settings;
 }
 
 function updateSettings($data) {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("INSERT INTO site_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+    $db = getDB();
     foreach ($data as $key => $value) {
-        $stmt->execute([$key, $value]);
+        $db->site_settings->updateOne(
+            ['setting_key' => $key],
+            ['$set' => ['setting_key' => $key, 'setting_value' => $value]],
+            ['upsert' => true]
+        );
     }
 }
 
 // Skill Helpers
 function getSkills() {
-    $pdo = getDB();
-    return $pdo->query("SELECT * FROM skills ORDER BY id ASC")->fetchAll();
+    $db = getDB();
+    $options = ['sort' => ['_id' => 1], 'typeMap' => ['root' => 'array', 'document' => 'array', 'array' => 'array']];
+    return iterator_to_array($db->skills->find([], $options));
 }
 
 function addSkill($name, $source, $value) {
-    // Sanitize path if it's an upload
     if ($source === 'upload') {
         $value = str_replace('\\', '/', $value);
     }
-    $pdo = getDB();
-    $stmt = $pdo->prepare("INSERT INTO skills (name, icon_source, icon_value) VALUES (?, ?, ?)");
-    $stmt->execute([$name, $source, $value]);
+    $db = getDB();
+    $db->skills->insertOne([
+        'name' => $name,
+        'icon_source' => $source,
+        'icon_value' => $value
+    ]);
 }
 
 function deleteSkill($id) {
-    $pdo = getDB();
-    // If local file, delete it
-    $stmt = $pdo->prepare("SELECT icon_source, icon_value FROM skills WHERE id = ?");
-    $stmt->execute([$id]);
-    $skill = $stmt->fetch();
+    $db = getDB();
+    $filter = preg_match('/^[a-f\d]{24}$/i', $id) ? ['_id' => new ObjectId($id)] : ['id' => (int)$id];
     
-    if ($skill && $skill['icon_source'] === 'upload') {
+    $skill = $db->skills->findOne($filter);
+    
+    if ($skill && isset($skill['icon_source']) && $skill['icon_source'] === 'upload') {
         $localPath = str_replace(BASE_URL . '/assets/uploads/', UPLOAD_DIR, $skill['icon_value']);
-        $localPath = str_replace('/', DIRECTORY_SEPARATOR, $localPath);
+        $localPath = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $localPath);
         if (file_exists($localPath)) unlink($localPath);
     }
     
-    $pdo->prepare("DELETE FROM skills WHERE id = ?")->execute([$id]);
+    $db->skills->deleteOne($filter);
 }
 
 function deleteProject($id) {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("DELETE FROM projects WHERE id = ?");
-    $stmt->execute([$id]);
+    $db = getDB();
+    $filter = preg_match('/^[a-f\d]{24}$/i', $id) ? ['_id' => new ObjectId($id)] : ['id' => (int)$id];
+    $db->projects->deleteOne($filter);
 }
 
 function slugify($text) {
@@ -224,3 +302,4 @@ function requireLogin() {
         exit;
     }
 }
+

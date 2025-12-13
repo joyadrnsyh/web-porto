@@ -1,0 +1,54 @@
+[
+    {
+        "setting_key": "about_bio",
+        "setting_value": "Hello! I'm a passionate Full Stack Developer with over 5 years of experience in crafting robust and scalable web applications. My journey started with a simple curiosity about how websites work, which has now evolved into a career where I solve complex problems with code."
+    },
+    {
+        "setting_key": "contact_whatsapp",
+        "setting_value": "6281234567890"
+    },
+    {
+        "setting_key": "hero_image",
+        "setting_value": "http:\/\/web-porto.test:8080\/assets\/uploads\/hero_69383a293d758.jpg"
+    },
+    {
+        "setting_key": "hero_subtitle",
+        "setting_value": "I build accessible, pixel-perfect, and performant web experiences."
+    },
+    {
+        "setting_key": "hero_title",
+        "setting_value": "Creating Digital Masterpieces"
+    },
+    {
+        "setting_key": "service_1_desc",
+        "setting_value": "Custom websites built with modern technologies like React, Next.js, and PHP. Fast, secure, and SEO-friendly."
+    },
+    {
+        "setting_key": "service_1_title",
+        "setting_value": "Web Development"
+    },
+    {
+        "setting_key": "service_2_desc",
+        "setting_value": "Cross-platform mobile applications using Flutter or React Native that provide a native experience on iOS and Android."
+    },
+    {
+        "setting_key": "service_2_title",
+        "setting_value": "App Development"
+    },
+    {
+        "setting_key": "service_3_desc",
+        "setting_value": "User-centered design that looks beautiful and works perfectly. Wireframes, prototypes, and high-fidelity mockups."
+    },
+    {
+        "setting_key": "service_3_title",
+        "setting_value": "UI\/UX Design"
+    },
+    {
+        "setting_key": "social_github",
+        "setting_value": "https:\/\/github.com"
+    },
+    {
+        "setting_key": "social_linkedin",
+        "setting_value": "https:\/\/linkedin.com"
+    }
+]

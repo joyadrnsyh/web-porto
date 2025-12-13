@@ -1,0 +1,12 @@
+[
+    {
+        "id": 4,
+        "project_id": 1,
+        "image_path": "http:\/\/web-porto.test:8080\/assets\/uploads\/gallery_69383392516ef.png"
+    },
+    {
+        "id": 5,
+        "project_id": 1,
+        "image_path": "http:\/\/web-porto.test:8080\/assets\/uploads\/gallery_693833a10acbb.png"
+    }
+]
