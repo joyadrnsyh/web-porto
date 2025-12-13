@@ -1,7 +1,0 @@
-{
-  "name": "joyadrnsyh/web-porto",
-  "description": "Portfolio Website",
-  "require": {
-    "mongodb/mongodb": "^1.15"
-  }
-}
